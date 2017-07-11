@@ -127,10 +127,10 @@ mail_subject="lxc-autosnapshot log"
 # (e.g. mail_opts="-S smtp=<smtp> -S smtp-use-starttls -S ssl-verify=ignore -S smtp-auth=login -S smtp-auth-user=<user> -S smtp-auth-password=<password>")
 mail_opts=
 
-# email repliction log when an error occurs (true/false)
-ERR_MAIL=false
+# email log when an error occurs (true/false)
+ERR_MAIL=true
 
-# always email replication log (true/false)
+# always email log (true/false)
 SENDMAIL=false
 
 #log to syslog (true/false)
@@ -145,5 +145,6 @@ DATE_FORMAT="+%Y-%m-%d %H:%M:%S"
 EOF
 
 echo "#LOG_FILE=/var/log/$BIN_NAME.log" >> $CFG_FILE
+echo "LOG_FILE=" >> $CFG_FILE
 
 
