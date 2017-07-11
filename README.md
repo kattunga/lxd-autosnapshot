@@ -6,8 +6,8 @@ Install
 
 download and decompress in any place
 ```
-wget https://github.com/kattunga/lxd-autosnapshot/archive/lxd-autosnapshot-v0.1.tar.gz
-tar -xvf lxd-autosnapshot-v0.1.tar.gz
+wget https://github.com/kattunga/lxd-autosnapshot/archive/v0.1.tar.gz
+tar -xvf v0.1.tar.gz
 sudo mv lxd-autosnapshot /opt/
 
 ```
