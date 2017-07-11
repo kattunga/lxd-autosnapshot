@@ -1,0 +1,418 @@
+#!/bin/bash
+#
+# Date: 2017-07-11
+# Version: 1.0.0
+#
+# Credits: 
+#    kattunga
+#      https://github.com/kattunga/lxd-autosnapshot.git
+#
+# Function:
+#    Maintains a runing snapshot archive for X time for LXD containers
+##
+# configuration file(s) path
+CONFIG_PATH=$(dirname $0)
+CONFIG_SOURCE=$(basename $0)
+
+#######################################################################################
+##################### Do not touch anything below this line ###########################
+#######################################################################################
+
+# this settingS are configured in zfs-repl.conf
+mail_from=
+mail_to=
+mail_subject=
+mail_opts=
+
+ERR_MAIL=false
+SENDMAIL=false
+
+SYSLOG=false
+DATE_FORMAT="+%Y-%m-%d %H:%M:%S"
+SNAPSHOT=true
+LOG_FILE=
+
+#local bins
+LXC=
+LOGGER=
+DATE=
+MAILX=
+
+# parsed parameters (defaults)
+CONTNAME=
+SNAP_PREF=
+MAX_TIME=
+QUIET=false
+DEBUG=false
+
+# files
+LOCK_PATH=/var/lock
+
+TMP_PATH=/tmp/$(basename $0 .sh).$$
+ERR_FILE=$TMP_PATH/error
+EMAIL_LOG=$TMP_PATH/emaillog
+
+CONT_INFO=$TMP_PATH/containerinfo.lst
+SNAP_LIST=$TMP_PATH/snaplist.lst
+
+# values: none, init, finished
+SENT_MAIL=false
+
+declare -a on_exit_items
+####################################Function###########################################
+#
+# on exit
+#
+on_exit() {
+	sig="$1"; shift
+	[ $DEBUG == true ] && log "on_exit: signal = $sig"
+    for i in "${on_exit_items[@]}"; do
+        [ $DEBUG == true ] && log "on_exit: $i"
+        eval $i
+    done
+    # propigate the sig
+    if [ $sig != EXIT ]; then
+    	trap - $sig EXIT
+    	kill -s $sig $$
+    fi
+}
+
+####################################Function###########################################
+#
+# on exit run
+#
+on_exit_run() {
+    local n=${#on_exit_items[*]}
+    on_exit_items[$n]="$*"
+    if [[ $n -eq 0 ]]; then
+        [ $DEBUG == true ] && log "Setting trap"
+        for sig in EXIT HUP INT QUIT PIPE TERM; do
+        	[ $DEBUG == true ] && log "trap \"on_exit $sig\" $sig"
+        	trap "on_exit $sig" $sig
+        done
+    fi
+}
+
+#######################################################################################
+####################################Function###########################################
+#######################################################################################
+#
+# usage
+#
+usage() {
+	echo "Usage: $(basename $0) "
+	echo "  -s --source             container name"
+	echo "  -f --prefix             snapshot prefix"
+	echo "  -t --snap-retain        max time to preserve/retain snapshots"
+	echo "                           e.g. \"7 days ago\", \"12 hours ago\" (default infinite)"
+	echo "  -n --no-snap            do not snapshot"
+	echo "  -q --quiet              quiet. suppress output to stdout"
+	echo "  -m --email-errors       email on errors"
+	echo "  -M --email              always email log"
+	echo "     --no-email           never email log"
+	echo "  -D --debug              show diagnositc information"
+	echo "  -h --help               display usage options "
+	exit 
+}
+
+#######################################################################################
+#
+# Function check source/target commands
+#
+check_cmd() {
+	# params
+	# source/target test
+	# exec var_name
+	# exec name
+	# option message
+	local sys
+	local var_name
+	local exec_name
+	local opt_msg
+	[ $# -lt 3 ] && exit 1
+	sys=$1
+	shift
+	var_name=$1
+	shift
+	exec_name=$1
+	shift
+	opt_msg="$*"
+	
+	case $sys in
+		source)
+			[ -x "${!var_name}" ] || log_error "-> ERROR: ${exec_name} not defined, not found, or not executable on source system.  Check ${var_name}= value in /etc/$(basename $0 .sh)/$(basename $0 .sh).conf. \'$opt_msg\' isn't available with current configuration!"
+			;;
+	esac
+
+}
+
+#######################################################################################
+#
+# Function check setting before launching anything
+#
+launch_check() {
+	local option
+
+	if [[ $SENDMAIL == true || $ERR_MAIL == true ]]; then
+		check_cmd "source" "MAILX" "mailx" "-m|--email-errors|-M|--email"
+	fi
+	if [[ "$MAX_TIME" != "" || "$RMT_MAX_TIME" != "" ]]; then
+		check_cmd "source" "DATE" "GNU date" "-t|--snap-retain|-T|--dest-snap-retain"
+	fi
+}
+
+#######################################################################################
+#
+# Function check if error was logged
+#
+check_for_error() {
+	if [ -s "$ERR_FILE" ]; then
+		log "$(cat $ERR_FILE)"
+		send_email_log
+		exit 1
+	fi
+}
+
+#######################################################################################
+#
+# Function log error
+#
+log_error() {
+	echo "$1" > $ERR_FILE
+	check_for_error
+}
+
+#######################################################################################
+#
+# Function log to std out and log file(s)
+#
+log() {
+	# if log has new lines, log each line separately
+	if [[ $1 == *$'\n'* ]]; then
+		local IFS=$'~'
+		for l in ${1//$'\n'/'~   '}; do
+			log "$l"
+		done
+		return
+	fi
+	# don't output blank lines
+	if [ -n "$1" ] && [ "$1" != "-> " ]; then
+		date_line=$($DATE "$DATE_FORMAT")
+		line="$date_line $1"
+		if [ $QUIET = false ]; then
+			echo "$line"
+		fi
+		if [ -n "$LOG_FILE" ]; then
+			echo "$line" >> $LOG_FILE 2> /dev/null
+		fi
+		if [[ ( $SENDMAIL == true || $ERR_MAIL == true ) && -n $EMAIL_LOG ]]; then
+			echo "$line" >> $EMAIL_LOG 2> /dev/null
+		fi
+		line="$1"
+		if [ $SYSLOG = true ]; then
+			#fix lines beginning w/ '->' as logger reads as cl option
+			if [ "->" == "${line:0:2}" ]; then
+				line="${line:2}"
+			fi
+			$LOGGER -t $(basename $0) "$line"
+		fi
+	fi
+}
+
+#######################################################################################
+#
+# Function email log file
+#
+send_email_log() {
+	if [ $SENT_MAIL = false ]; then
+		if [[ ( $SENDMAIL == true || ( $ERR_MAIL == true && -s $ERR_FILE ) ) && -n $EMAIL_LOG && -s $EMAIL_LOG ]]; then
+			$MAILX $mail_opts -r "$mail_from" -s "$mail_subject" $mail_to < $EMAIL_LOG
+			[ $DEBUG = true ] && echo "Sent email to $mail_to."
+			# send email only once
+			SENT_MAIL=true
+		fi
+	fi
+}
+
+#######################################################################################
+#
+# Function Issue a snapshot
+#
+create_snapshot() {
+	SnapName="$SNAP_PREF$($DATE +%Y%m%d%H%M%S)"
+	log "-> $CONTNAME@$SnapName Snapshot creation."
+	output=$( $LXC snapshot $CONTNAME $SnapName 2> $ERR_FILE )
+	log "-> $output"
+	check_for_error
+}
+
+#######################################################################################
+#
+# Function issue lxd list commands and assign the variables the last snapshot names
+#
+list_snapshots() {
+	$LXC info $CONTNAME > $CONT_INFO
+
+	if [ -f $SNAP_LIST ]; then
+		rm $SNAP_LIST
+	fi
+	touch $SNAP_LIST
+
+	SNAP_FLAG=false  
+
+	while read snaps
+	do
+		snap=$( echo $snaps | cut -d " " -f1 )
+
+		if [[ "$SNAP_FLAG" == "true" ]] && [[ "$snap" = $SNAP_PREF* ]]; then
+			echo $snap >> $SNAP_LIST
+		fi
+		if [ "$snaps" == "Snapshots:" ]; then
+			SNAP_FLAG=true
+		fi
+	done < $CONT_INFO
+}
+
+#######################################################################################
+#
+# Function to clean up snapshots that are older than X days old. X being the value set by "MAX_TIME".
+#
+clean_old_snaps() {
+    list_snapshots
+
+	RetainDateTime=$($DATE +%Y%m%d%H%M%S --date="$MAX_TIME")
+	while read snaps
+	do
+
+		# get the datetime portion of the snapshot name
+		SnapDateTime=${snaps:( ${#SNAP_PREF} )}
+
+		#  need to ensure $SnapDateTime is numeric and 14 digits for comparison to $RetainDateTime
+		if [ $( echo ${SnapDateTime} | grep -c '^[0-9]*$' ) -eq 1 ] && [ ${#SnapDateTime} -eq 14 ]; then
+			if [ $RetainDateTime -gt $SnapDateTime ]
+			then
+				log "-> Destroying snapshot $snaps"
+				log "-> $($LXC delete $CONTNAME/$snaps)"
+			fi
+		fi
+	done < $SNAP_LIST
+}
+
+#######################################################################################
+#####################################Main Entery#######################################
+#######################################################################################
+
+## local configuration, chek if file exists,
+if [ -f $CONFIG_PATH/$CONFIG_SOURCE.conf ]; then
+  . $CONFIG_PATH/$CONFIG_SOURCE.conf
+else
+  echo "Configuration file $CONFIG_PATH/$CONFIG_SOURCE.conf not found."
+  echo "Execute $CONFIG_PATH/config $CONFIG_SOURCE to create it and edit it to fill required settings"
+  exit 1
+fi
+
+[ $# -eq 0 ] && usage
+
+while [ $# -gt 0 ];do
+     case "$1" in
+         -s|--source)
+             shift
+             CONTNAME=$1
+             ;;
+         -f|--prefix)
+             shift
+             SNAP_PREF="$1"
+             ;;
+         -t|--snap-retain)
+             shift
+             MAX_TIME="$1"
+             ;;
+         -m|--email-errors)
+            ERR_MAIL=true
+            ;;
+         -M|--email)
+            SENDMAIL=true
+            ;;
+         --no-email)
+            ERR_MAIL=false
+            SENDMAIL=false
+            ;;
+         -n|--no-snap)
+            SNAPSHOT=false
+            ;;
+         -q|--quiet)
+         	QUIET=true
+         	;;
+         -D|--debug)
+            DEBUG=true
+            ;;
+         -h|--help)
+         	usage
+         	;;
+         *)
+         	echo "Invalid option $1."
+            usage
+            ;;
+     esac
+     shift
+done
+
+# check if we can write to log file
+if [ -n $LOG_FILE ] && [ ! -w $LOG_FILE ]; then
+	echo "ERROR: can't write to log file $LOG_FILE"
+	exit 1
+fi
+
+# lock & err file isolation based on source path
+CONTNAME_hash=${CONTNAME//\//#}
+
+# lock file to avoid concurrent snapshot
+LOCK_FILE=$LOCK_PATH/$(basename $0 .sh)-${CONTNAME_hash}
+
+# create isolated tmp directory
+mkdir -p $TMP_PATH > /dev/null 2>&1
+[ $DEBUG = true ] && log "TMP_PATH = $TMP_PATH"
+
+#register exit/clean up tasks
+on_exit_run	log "End ------------------------------------------------------------"
+on_exit_run send_email_log
+[ $DEBUG = false ] && on_exit_run rm -rf $TMP_PATH
+
+# check and complete parameters
+if [ -z $CONTNAME ]; then
+	echo "Missing parameter source path -s|--source"
+	usage
+fi
+
+# Check if snapshot is running
+if [ -e "$LOCK_FILE" ]; then
+	log_error "-> ERROR: autosnapshot is currently running."
+	exit
+fi
+
+# check we have commands to run options specified
+launch_check
+
+# set the lock flag w/ pid
+touch $LOCK_FILE > /dev/null 2>&1
+if [ $? -gt 0 ]; then
+	echo "ERROR: unable to create lock file: $LOCK_FILE"
+	exit 1
+fi
+echo $$ > $LOCK_FILE
+
+#register exit/clean up tasks
+on_exit_run rm -f $LOCK_FILE
+
+# Clean up any snapshots that are old.
+if [ -n "$MAX_TIME" ]; then
+	clean_old_snaps 2> $ERR_FILE
+	check_for_error
+fi
+
+#Create a new snapshot of the path spec.
+if [ $SNAPSHOT == true ]; then
+	create_snapshot
+fi
+
+exit 0

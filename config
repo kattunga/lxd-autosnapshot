@@ -1,0 +1,149 @@
+#! /bin/bash
+# creates a configuration for source system that can be piped to a file
+
+if [ "$1" = "" ]; then
+  BIN_NAME="lxd-autosnapshot"
+else
+  BIN_NAME=$1
+fi
+
+BIN_FILE=$(dirname $0)/$BIN_NAME
+
+if [ ! -f $BIN_FILE ]; then
+  echo "File $BIN_FILE not found"
+  exit 1
+fi
+
+CFG_FILE=$BIN_FILE.conf
+
+find_bins() {
+	# params:
+	#	list of exec to find
+	#	results var
+	[ $# -ne 2 ] && exit 1
+	local execs
+	local result_var
+	local p
+	local paths
+	local IFS
+	local e
+	local uid
+	declare -a execs=($1)
+	result_var=$2
+	uid=$(id -u )
+	
+	#find and check bins
+	for e in ${execs[*]}; do
+		p=$(which $e 2> /dev/null)
+		if [[ $? -ne 0 || $e = "date" ]]; then
+			# try to find it
+			guess_bin $e
+			p="${_guess_bin}"
+		fi
+		
+		# root doesn't need sudo
+		if [[ $e == sudo && $uid -eq 0 ]]; then
+			p='    '
+		fi
+		paths="${paths}${p}"$'\n'
+	done
+
+	printf -v "${result_var}" '%s' "${paths}"
+	
+}
+
+guess_bin() {
+	# params
+	#	exec
+	[ $# -ne 1 ] && exit 1
+	local ex
+	local path_list
+	local k
+	local cmd
+	local IFS
+	local out
+	ex=$1
+	path_list="/sbin /bin /usr/sbin /usr/bin /usr/gnu/bin"
+	
+	#build command to run
+	IFS=' '
+	for k in $path_list; do
+		if [ -x $k/$ex ]; then 
+			out=$k/$ex;
+			if [ $ex = date ]; then
+				test_date "$out"
+				if [ $? -eq 0 ]; then
+					break
+				else
+					out=
+				fi
+			fi
+		else
+			out="     "
+		fi;
+	done
+	
+	printf -v "_${FUNCNAME}" '%s' "${out}"
+}
+
+test_date() {
+	# params
+	# path to date commmand to test
+	local ex
+	ex=$1
+	$ex --date="-2 days" > /dev/null 2>&1
+}
+
+# set rmt commands too as default
+declare -a VARS=('SUDO=%s' 'LXC="$SUDO %s"' 'CAT=%s' 'LOGGER=%s' 'MAILX=%s' 'SHUF=%s' 'DATE=%s')
+EXECS="sudo lxc cat logger mailx shuf date"
+BINS=
+
+CONFIG="# commands path for $BIN_NAME"$'\n'
+
+find_bins "$EXECS" "BINS"
+IFS=$'\n'
+i=0
+for v in $BINS; do
+	printf -v t "${VARS[$i]}" "$v"
+	CONFIG="${CONFIG}${t}"$'\n'
+	i=$(( i + 1 ))
+done
+
+echo "$CONFIG" > $CFG_FILE
+
+cat << EOF >> $CFG_FILE
+##### settings
+# default settings
+# settings in this file can be over ridden by command line options
+#
+
+# email to send reports
+mail_from=
+mail_to=
+mail_subject="lxc-autosnapshot log"
+
+# mailx options (check man mailx for see available options)
+# (e.g. mail_opts="-S smtp=<smtp> -S smtp-use-starttls -S ssl-verify=ignore -S smtp-auth=login -S smtp-auth-user=<user> -S smtp-auth-password=<password>")
+mail_opts=
+
+# email repliction log when an error occurs (true/false)
+ERR_MAIL=false
+
+# always email replication log (true/false)
+SENDMAIL=false
+
+#log to syslog (true/false)
+SYSLOG=false
+
+#date format used in log file
+# see 'man date' or 'info date' for options
+DATE_FORMAT="+%Y-%m-%d %H:%M:%S"
+
+# set LOG_FILE
+# default is disabled (LOG_FILE= )
+EOF
+
+echo "#LOG_FILE=/var/log/$BIN_NAME.log" >> $CFG_FILE
+
+
