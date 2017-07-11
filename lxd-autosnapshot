@@ -296,13 +296,10 @@ clean_old_snaps() {
 
 		#  need to ensure $SnapDateTime is numeric and 14 digits for comparison to $RetainDateTime
 		if [ $( echo ${SnapDateTime} | grep -c '^[0-9]*$' ) -eq 1 ] && [ ${#SnapDateTime} -eq 14 ]; then
-echo $RetainDateTime
-echo $SnapDateTime
-
 			if [ $RetainDateTime -gt $SnapDateTime ]
 			then
 				log "-> Destroying snapshot $snaps"
-#				log "-> $($LXC delete $CONTNAME/$snaps)"
+				log "-> $($LXC delete $CONTNAME/$snaps)"
 			fi
 		fi
 	done < $SNAP_LIST
