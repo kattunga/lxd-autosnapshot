@@ -280,7 +280,14 @@ list_snapshots() {
 clean_old_snaps() {
     list_snapshots
 
+    TodayDateTime=$($DATE +%Y%m%d%H%M%S)
 	RetainDateTime=$($DATE +%Y%m%d%H%M%S --date="$MAX_TIME")
+
+	if [ $RetainDateTime -gt $TodayDateTime ]
+	then
+		log_error "ERROR: wrong --snap-retain value, remember to add the 'old' word. ex: 1 day old"
+	fi
+
 	while read snaps
 	do
 
@@ -289,10 +296,13 @@ clean_old_snaps() {
 
 		#  need to ensure $SnapDateTime is numeric and 14 digits for comparison to $RetainDateTime
 		if [ $( echo ${SnapDateTime} | grep -c '^[0-9]*$' ) -eq 1 ] && [ ${#SnapDateTime} -eq 14 ]; then
+echo $RetainDateTime
+echo $SnapDateTime
+
 			if [ $RetainDateTime -gt $SnapDateTime ]
 			then
 				log "-> Destroying snapshot $snaps"
-				log "-> $($LXC delete $CONTNAME/$snaps)"
+#				log "-> $($LXC delete $CONTNAME/$snaps)"
 			fi
 		fi
 	done < $SNAP_LIST
