@@ -137,7 +137,7 @@ check_cmd() {
 	exec_name=$1
 	shift
 	opt_msg="$*"
-	
+
 	case $sys in
 		source)
 			[ -x "${!var_name}" ] || log_error "-> ERROR: ${exec_name} not defined, not found, or not executable on source system.  Check ${var_name}= value in /etc/$(basename $0 .sh)/$(basename $0 .sh).conf. \'$opt_msg\' isn't available with current configuration!"
@@ -278,10 +278,10 @@ list_snapshots() {
 # Function to clean up snapshots that are older than X days old. X being the value set by "MAX_TIME".
 #
 clean_old_snaps() {
-    list_snapshots
+  list_snapshots
 
-    TodayDateTime=$($DATE +%Y%m%d%H%M%S)
-	RetainDateTime=$($DATE +%Y%m%d%H%M%S --date="$MAX_TIME")
+  TodayDateTime=$($DATE +%Y%m%d%H%M%S)
+  RetainDateTime=$($DATE +%Y%m%d%H%M%S --date="$MAX_TIME")
 
 	if [ $RetainDateTime -gt $TodayDateTime ]
 	then
