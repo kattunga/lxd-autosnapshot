@@ -285,7 +285,7 @@ clean_old_snaps() {
 
 	if [ $RetainDateTime -gt $TodayDateTime ]
 	then
-		log_error "ERROR: wrong --snap-retain value, remember to add the 'old' word. ex: 1 day old"
+		log_error "ERROR: wrong --snap-retain value, remember to add the 'ago' word. ex: 1 day ago or use the minus sign: -2 days"
 	fi
 
 	while read snaps
